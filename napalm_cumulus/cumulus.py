@@ -68,7 +68,7 @@ class CumulusDriver(NetworkDriver):
             'alt_host_keys': False,
             'alt_key_file': '',
             'ssh_config_file': None,
-            'secret': password,
+            'secret': None,
             'allow_agent': False
         }
 
@@ -143,15 +143,17 @@ class CumulusDriver(NetworkDriver):
 
     def _send_command(self, command):
         response = self.device.send_command(command)
-        if 'Permission denied' or 'ERROR: 'in response:
-            try:
-                if self.netmiko_optional_args.get('secret'):
-                    self.device.enable()
-                    response = self.device.send_command(command)
-                    self.device.exit_enable_mode()
-                    return response
-            except ValueError:
-                raise ConnectionException('Super User Elevation Required. Set Netmiko secret argument')
+        return response
+#        if response.find("Permission denied") > -1 or response.find("ERROR: ") > -1:
+#            print('Trying to escalate up :c')
+#            try:
+#                if self.netmiko_optional_args.get('secret'):
+#                    self.device.enable()
+#                    response = self.device.send_command(command)
+#                    self.device.exit_enable_mode()
+#                    return response
+#            except ValueError:
+#                raise ConnectionException('Super User Elevation Required. Set Netmiko secret argument')
 
     def get_facts(self):
         facts = {
@@ -235,8 +237,9 @@ class CumulusDriver(NetworkDriver):
          133.130.120.204 133.243.238.164  2 u   46   64  377    7.717  987996. 1669.77
         """
 
-        output = self._send_command("net show time ntp servers")
-        output = output.split("\n")[2:]
+        #output = self._send_command("net show time ntp servers")
+        output = self._send_command("ntpq -np")
+        output = output.split("\n")[2:]#Split off the top two lines
         ntp_stats = list()
 
         for ntp_info in output:
@@ -247,7 +250,7 @@ class CumulusDriver(NetworkDriver):
                 # 'remote' contains '*' if the machine synchronized with NTP server
                 synchronized = "*" in remote
 
-                match = re.search(r'(\d+\.\d+\.\d+\.\d+)', remote)
+                match = re.search(r'(\d+\.\d+\.\d+\.\d+)', remote)#TODO Fails if ntp is using hostnames via net showtime ntp servers
                 ip = match.group(1)
 
                 when = when if when != '-' else 0
@@ -289,7 +292,7 @@ class CumulusDriver(NetworkDriver):
         ping_result = dict()
         output_ping = self._send_command(command)
 
-        if "Unknown host" in output_ping:
+        if "unknown host" in output_ping.lower():
             err = "Unknown host"
         else:
             err = ""
@@ -420,12 +423,14 @@ class CumulusDriver(NetworkDriver):
                                             output_json[interface]['iface_obj']['mac'])
         # Calculate last interface flap time. Dependent on router daemon
         # Send command to determine if router daemon is running. Not dependent on quagga or frr
-        daemon_check = self._send_command("sudo vtysh -c 'show version'")
-        if 'Exiting: failed to connect to any daemons.' in daemon_check:
+        #daemon_check = self._send_command("sudo vtysh -c 'show version'")
+        daemon_check = self._send_command("net show version")
+        if str(daemon_check).find('Exiting: failed to connect to any daemons.'):
             for interface in interfaces.keys():
                 interfaces[interface]['last_flapped'] = -1
         else:
-            show_int_output = self._send_command("sudo vtysh -c 'show interface'")
+            #show_int_output = self._send_command("sudo vtysh -c 'show interface'")
+            show_int_output = self._send_command("net show interface")
             remote_system_date = self._send_command('date "+%Y/%m/%d %H:%M:%S.%6N"')
             remote_system_date = datetime.strptime(remote_system_date, "%Y/%m/%d %H:%M:%S.%f")
             split_int_output = list(filter(None, re.split("(?!Interface Type)Interface", show_int_output)))
@@ -500,7 +505,7 @@ class CumulusDriver(NetworkDriver):
 
         return configuration
 
-    def get_bgp_neighbors(self):
+    def get_bgp_neighbors(self):#invalid json can be returned if bgpd is not running
         vrf = 'global'
         bgp_neighbors = {vrf: {}}
         bgp_neighbor = {}
